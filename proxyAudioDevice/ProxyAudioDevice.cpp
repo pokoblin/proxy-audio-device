@@ -1,7 +1,9 @@
 #include "ProxyAudioDevice.h"
 
 #include <algorithm>
+#include <atomic>
 #include <string>
+#include <vector>
 #include <dispatch/dispatch.h>
 #include <mach/mach_time.h>
 
@@ -25,14 +27,13 @@ std::string CFStringToStdString(CFStringRef s) {
         return std::string("<null>");
     }
     
-    char *buffer;
-    size_t length = CFStringGetLength(s) + 1;
-    buffer = new char[length];
-    CFStringGetCString(s, buffer, length, kCFStringEncodingUTF8);
-    std::string result(buffer);
-    delete buffer;
-    
-    return result;
+    CFIndex length = CFStringGetLength(s);
+    CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+    std::vector<char> buffer(maxSize);
+    if (!CFStringGetCString(s, buffer.data(), maxSize, kCFStringEncodingUTF8)) {
+        return std::string();
+    }
+    return std::string(buffer.data());
 }
 
 #pragma mark The Interface
@@ -578,8 +579,23 @@ OSStatus ProxyAudioDevice::Initialize(AudioServerPlugInDriverRef inDriver, Audio
     theHostClockFrequency *= 1000000000.0;
     gDevice_HostTicksPerFrame = theHostClockFrequency / gDevice_SampleRate;
 
-    inputBuffer = new AudioRingBuffer(gDevice_BytesPerFrameInChannel * gDevice_ChannelsPerFrame, 88200);
-    workBuffer = new Byte[gDevice_BytesPerFrameInChannel * gDevice_ChannelsPerFrame * kDevice_RingBufferSize * 2];
+    // Use std::nothrow so that allocation failure surfaces as a clean error
+    // code instead of an uncaught exception across the C plug-in boundary.
+    inputBuffer = new (std::nothrow) AudioRingBuffer(
+        gDevice_BytesPerFrameInChannel * gDevice_ChannelsPerFrame, 88200);
+    workBufferCapacityFrames = kDevice_RingBufferSize * 2;
+    workBuffer = new (std::nothrow)
+        Byte[gDevice_BytesPerFrameInChannel * gDevice_ChannelsPerFrame * workBufferCapacityFrames];
+
+    if (!inputBuffer || !workBuffer) {
+        syslog(LOG_ERR, "ProxyAudio: failed to allocate audio buffers during Initialize");
+        delete inputBuffer;
+        inputBuffer = NULL;
+        delete[] workBuffer;
+        workBuffer = NULL;
+        workBufferCapacityFrames = 0;
+        return kAudioHardwareUnspecifiedError;
+    }
 
     initializeOutputDevice();
 
@@ -3773,7 +3789,6 @@ Boolean ProxyAudioDevice::HasControlProperty(AudioServerPlugInDriverRef inDriver
 
     //    declare the local variables
     Boolean theAnswer = false;
-    return false;
     //    check the arguments
     FailIf(inDriver != gAudioServerPlugInDriverRef, Done, "HasControlProperty: bad driver reference");
     FailIf(inAddress == NULL, Done, "HasControlProperty: no address");
@@ -5363,6 +5378,20 @@ OSStatus ProxyAudioDevice::outputDeviceIOProc(AudioDeviceID inDevice,
 
     if (currentOutputDeviceSampleRate != currentInputDeviceSampleRate) {
         DebugMsg("ProxyAudio: cannot play, mismatched sample rate");
+        // Release-build users also need a breadcrumb when silence appears on
+        // the output, so emit a rate-limited syslog warning.
+        static std::atomic<time_t> lastRateMismatchWarning{0};
+        time_t seconds;
+        time(&seconds);
+        time_t lastWarn = lastRateMismatchWarning.load(std::memory_order_relaxed);
+        if ((seconds - lastWarn) > 5
+            && lastRateMismatchWarning.compare_exchange_strong(lastWarn, seconds,
+                                                               std::memory_order_relaxed)) {
+            syslog(LOG_WARNING,
+                   "ProxyAudio: sample rate mismatch - input %.0f Hz, output %.0f Hz (output silenced)",
+                   currentInputDeviceSampleRate,
+                   currentOutputDeviceSampleRate);
+        }
         return noErr;
     }
 
@@ -5380,14 +5409,41 @@ OSStatus ProxyAudioDevice::outputDeviceIOProc(AudioDeviceID inDevice,
         return noErr;
     }
 
+    // Initialize() may have failed to allocate these buffers; bail out rather
+    // than dereferencing null pointers on the audio render thread.
+    if (!inputBuffer || !workBuffer) {
+        return noErr;
+    }
+
+    // Guard against an output device reporting a buffer size larger than our
+    // preallocated workBuffer — writing beyond it would corrupt the heap.
+    if (currentOutputDeviceBufferFrameSize > workBufferCapacityFrames) {
+        static std::atomic<time_t> lastOversizedWarning{0};
+        time_t seconds;
+        time(&seconds);
+        time_t lastWarn = lastOversizedWarning.load(std::memory_order_relaxed);
+        if ((seconds - lastWarn) > 5
+            && lastOversizedWarning.compare_exchange_strong(lastWarn, seconds,
+                                                            std::memory_order_relaxed)) {
+            syslog(LOG_WARNING,
+                   "ProxyAudio: output buffer frame size %u exceeds work buffer capacity %u; dropping cycle",
+                   (unsigned)currentOutputDeviceBufferFrameSize,
+                   (unsigned)workBufferCapacityFrames);
+        }
+        return noErr;
+    }
+
     bool overrun = inputBuffer->Fetch(workBuffer, currentOutputDeviceBufferFrameSize, (SInt64)startFrame);
+
+    SInt64 bufferStart = inputBuffer->StartFrame();
+    SInt64 bufferEnd = inputBuffer->EndFrame();
 
 #if DEBUG
     // This is just some debugging info to tell when we might be gradually
     // approaching the end of the input buffer and headed for a buffer
     // overrun
     SInt64 framesToBufferEnd =
-        inputBuffer->mEndFrame - (SInt64(startFrame) + SInt64(currentOutputDeviceBufferFrameSize));
+        bufferEnd - (SInt64(startFrame) + SInt64(currentOutputDeviceBufferFrameSize));
 
     if (smallestFramesToBufferEnd == -1
         || (framesToBufferEnd < smallestFramesToBufferEnd && smallestFramesToBufferEnd >= 0)) {
@@ -5396,21 +5452,24 @@ OSStatus ProxyAudioDevice::outputDeviceIOProc(AudioDeviceID inDevice,
     }
 #endif
 
-    if (overrun && inputFinalFrameTime == -1 && startFrame >= inputBuffer->mStartFrame) {
+    if (overrun && inputFinalFrameTime == -1 && startFrame >= bufferStart) {
         // Since this warning could conceivably happen every cycle, explicitly make it
-        // only appear once every five seconds at most
-        static time_t lastBufferOverrunWarning = 0;
+        // only appear once every five seconds at most. Use an atomic so that
+        // concurrent IOProc callbacks do not race on the timestamp.
+        static std::atomic<time_t> lastBufferOverrunWarning{0};
         time_t seconds;
         time(&seconds);
-        
-        if ((seconds - lastBufferOverrunWarning) > 5) {
-            lastBufferOverrunWarning = seconds;
+
+        time_t lastWarn = lastBufferOverrunWarning.load(std::memory_order_relaxed);
+        if ((seconds - lastWarn) > 5
+            && lastBufferOverrunWarning.compare_exchange_strong(lastWarn, seconds,
+                                                                std::memory_order_relaxed)) {
             syslog(LOG_WARNING, "ProxyAudio: output unexpected overrun");
             syslog(LOG_WARNING, "ProxyAudio: output frame: %lf", startFrame);
             syslog(LOG_WARNING,
-                   "ProxyAudio: output buffer start: %llu    end: %llu",
-                   inputBuffer->mStartFrame,
-                   inputBuffer->mEndFrame);
+                   "ProxyAudio: output buffer start: %lld    end: %lld",
+                   (long long)bufferStart,
+                   (long long)bufferEnd);
         }
     }
     
