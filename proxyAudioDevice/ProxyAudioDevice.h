@@ -479,6 +479,7 @@ class ProxyAudioDevice {
     dispatch_source_t inputMonitoringTimer = NULL;
     AudioRingBuffer *inputBuffer = NULL;
     Byte *workBuffer = NULL;
+    UInt32 workBufferCapacityFrames = 0;
     AudioDevice outputDevice;
     bool outputDeviceReady = false;
     std::atomic_bool inputIOIsActive;
@@ -502,7 +503,7 @@ class ProxyAudioDevice {
     AudioServerPlugInHostRef gPlugIn_Host = NULL;
     Boolean gBox_Acquired = true;
     Float64 gDevice_SampleRate = 44100.0;
-    std::vector<Float64> gDevice_SampleRates = {22050, 44100, 48000, 88200, 96000, 176400, 192000};
+    std::vector<Float64> gDevice_SampleRates = {22050, 44100, 48000, 88200, 96000, 176400, 192000, 384000, 768000};
     UInt64 gDevice_IOIsRunning = 0;
     const UInt32 kDevice_RingBufferSize = 16384;
     Float64 gDevice_HostTicksPerFrame = 0.0;

@@ -581,8 +581,10 @@ OSStatus ProxyAudioDevice::Initialize(AudioServerPlugInDriverRef inDriver, Audio
 
     // Use std::nothrow so that allocation failure surfaces as a clean error
     // code instead of an uncaught exception across the C plug-in boundary.
+    // Capacity is sized to keep at least ~500ms of audio at the highest supported
+    // sample rate (768 kHz), which also yields several seconds at lower rates.
     inputBuffer = new (std::nothrow) AudioRingBuffer(
-        gDevice_BytesPerFrameInChannel * gDevice_ChannelsPerFrame, 88200);
+        gDevice_BytesPerFrameInChannel * gDevice_ChannelsPerFrame, 384000);
     workBufferCapacityFrames = kDevice_RingBufferSize * 2;
     workBuffer = new (std::nothrow)
         Byte[gDevice_BytesPerFrameInChannel * gDevice_ChannelsPerFrame * workBufferCapacityFrames];
