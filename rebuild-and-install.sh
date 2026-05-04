@@ -122,12 +122,82 @@ sudo cp -R "$BUILT_DRIVER" "$HAL_PLUGIN_DIR/"
 sudo chown -R root:wheel "$TARGET"
 
 # ---------- restart coreaudiod ----------
+# coreaudiod has to be restarted for it to pick up the new .driver bundle.
+# Three known cases on modern macOS:
+#
+#   - macOS < 14.4:   `sudo killall coreaudiod` works.
+#   - macOS 14.4+:    `killall` is blocked, `launchctl kickstart` works.
+#   - macOS 26+:      `launchctl kickstart` is also blocked when System
+#                     Integrity Protection (SIP) is enabled (the protected
+#                     launchd domain rejects kickstart with errno 150).
+#                     `killall` typically works again here because SIP only
+#                     restricts the launchctl administrative path, not
+#                     sending SIGTERM to a process.
+#
+# Strategy: try kickstart first (works on the widest range of versions),
+# fall back to killall, and if both fail, print a highlighted instruction
+# so the user knows exactly what to do manually.
+
+# ANSI escape sequences for highlighting the fallback notice.
+if [[ -t 1 ]]; then
+    BOLD=$'\033[1m'
+    YELLOW=$'\033[33m'
+    RED=$'\033[31m'
+    RESET=$'\033[0m'
+else
+    BOLD=""; YELLOW=""; RED=""; RESET=""
+fi
+
 echo "==> Restarting coreaudiod"
-# macOS 14.4+ requires launchctl kickstart; `killall coreaudiod` no longer
-# works because coreaudiod runs in a protected launchd domain.
-sudo launchctl kickstart -kp system/com.apple.audio.coreaudiod
+restart_ok=false
+
+if sudo launchctl kickstart -kp system/com.apple.audio.coreaudiod 2>/dev/null; then
+    echo "    coreaudiod restarted via launchctl kickstart."
+    restart_ok=true
+elif sudo killall coreaudiod 2>/dev/null; then
+    # launchd will respawn coreaudiod automatically (it's KeepAlive).
+    echo "    coreaudiod restarted via killall (launchctl kickstart was blocked,"
+    echo "    likely due to SIP on macOS 26+)."
+    restart_ok=true
+fi
+
+if ! $restart_ok; then
+    cat <<EOF
+
+${BOLD}${YELLOW}╔══════════════════════════════════════════════════════════════════════╗${RESET}
+${BOLD}${YELLOW}║${RESET}  ${BOLD}${RED}MANUAL STEP REQUIRED${RESET}                                                ${BOLD}${YELLOW}║${RESET}
+${BOLD}${YELLOW}╠══════════════════════════════════════════════════════════════════════╣${RESET}
+${BOLD}${YELLOW}║${RESET}  Could not restart coreaudiod automatically. The new .driver is     ${BOLD}${YELLOW}║${RESET}
+${BOLD}${YELLOW}║${RESET}  installed but coreaudiod is still using the old one in memory.     ${BOLD}${YELLOW}║${RESET}
+${BOLD}${YELLOW}║${RESET}                                                                      ${BOLD}${YELLOW}║${RESET}
+${BOLD}${YELLOW}║${RESET}  Run this command manually to finish:                                ${BOLD}${YELLOW}║${RESET}
+${BOLD}${YELLOW}║${RESET}                                                                      ${BOLD}${YELLOW}║${RESET}
+${BOLD}${YELLOW}║${RESET}      ${BOLD}sudo killall coreaudiod${RESET}                                       ${BOLD}${YELLOW}║${RESET}
+${BOLD}${YELLOW}║${RESET}                                                                      ${BOLD}${YELLOW}║${RESET}
+${BOLD}${YELLOW}║${RESET}  If that also fails: log out and back in, or reboot.                ${BOLD}${YELLOW}║${RESET}
+${BOLD}${YELLOW}╚══════════════════════════════════════════════════════════════════════╝${RESET}
+
+EOF
+fi
 
 echo "==> Done."
 echo "    Installed: $TARGET"
 echo "    Watch logs with:"
 echo "      log stream --predicate 'eventMessage CONTAINS \"ProxyAudio\"' --info"
+
+# ----------------------------------------------------------------------------
+# NOTE on macOS 26+ with SIP enabled:
+#
+#   `sudo launchctl kickstart -kp system/com.apple.audio.coreaudiod` is
+#   blocked with: "150: Operation not permitted while System Integrity
+#   Protection is engaged".
+#
+#   The fix is NOT to disable SIP. Use:
+#
+#       sudo killall coreaudiod
+#
+#   coreaudiod is a KeepAlive service, so launchd respawns it immediately,
+#   which reloads every plug-in in /Library/Audio/Plug-Ins/HAL/. SIP only
+#   blocks `launchctl` administrative operations on protected services; it
+#   does not block sending signals to processes.
+# ----------------------------------------------------------------------------
