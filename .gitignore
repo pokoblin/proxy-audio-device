@@ -66,3 +66,8 @@ DerivedData/
 **/xcshareddata/WorkspaceSettings.xcsettings
 
 # End of https://www.gitignore.io/api/xcode,macos
+
+# Local signing/install config for rebuild-and-install.sh — must not be
+# committed. The committed `rebuild-and-install.config.template` shows the
+# expected fields.
+rebuild-and-install.config

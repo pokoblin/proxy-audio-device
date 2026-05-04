@@ -1,0 +1,27 @@
+# rebuild-and-install.config.template
+#
+# Copy this file to `rebuild-and-install.config` and fill in your own values.
+# `rebuild-and-install.config` is gitignored — your local credentials never
+# get committed.
+#
+# All values are plain shell variable assignments. The script `source`s this
+# file, so standard shell quoting rules apply.
+
+# Apple Developer team identifier — the 10-character ID after your team name.
+# Find it via:  security find-identity -v -p codesigning
+# Example: VS555M5VA8
+DEVELOPMENT_TEAM=""
+
+# Code signing identity. For a HAL plugin you almost always want
+# "Developer ID Application: <Your Name> (<TEAM_ID>)".
+# Find it via:  security find-identity -v -p codesigning
+# Example: "Developer ID Application: TONDA K.K. (VS555M5VA8)"
+CODE_SIGN_IDENTITY=""
+
+# Xcode build configuration. Usually Release; Debug also works if you want
+# DebugMsg() output in the system log.
+CONFIGURATION="Release"
+
+# Where coreaudiod loads HAL plugins from. Don't change unless you know what
+# you're doing.
+HAL_PLUGIN_DIR="/Library/Audio/Plug-Ins/HAL"
