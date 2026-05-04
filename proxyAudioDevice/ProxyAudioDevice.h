@@ -3,6 +3,8 @@
 
 #include <CoreAudio/AudioServerPlugIn.h>
 #include <CoreAudio/CoreAudio.h>
+#include <IOKit/IOKitLib.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
 #include <vector>
 #include <atomic>
 
@@ -66,6 +68,14 @@ class ProxyAudioDevice {
     void initializeOutputDevice();
     void deinitializeOutputDeviceNoLock();
     void deinitializeOutputDevice();
+    void setupPowerManagementListener();
+    void teardownPowerManagementListener();
+    static void powerCallbackStatic(void *refCon,
+                                    io_service_t service,
+                                    natural_t messageType,
+                                    void *messageArgument);
+    void powerCallback(natural_t messageType, void *messageArgument);
+    void handleSystemDidWake();
     void resetInputData();
     static OSStatus outputDeviceIOProcStatic(AudioDeviceID inDevice,
                                              const AudioTimeStamp *inNow,
@@ -477,6 +487,9 @@ class ProxyAudioDevice {
     CAMutex getZeroTimestampMutex = CAMutex("ProxyAudioGetZeroTimestampMutex");
     dispatch_queue_t audioOutputQueue = NULL;
     dispatch_source_t inputMonitoringTimer = NULL;
+    io_connect_t powerRootPort = MACH_PORT_NULL;
+    IONotificationPortRef powerNotifyPort = NULL;
+    io_object_t powerNotifier = MACH_PORT_NULL;
     AudioRingBuffer *inputBuffer = NULL;
     Byte *workBuffer = NULL;
     AudioDevice outputDevice;

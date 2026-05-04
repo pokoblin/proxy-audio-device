@@ -4,6 +4,7 @@
 #include <string>
 #include <dispatch/dispatch.h>
 #include <mach/mach_time.h>
+#include <IOKit/IOMessage.h>
 
 #include "AudioDevice.h"
 #include "AudioRingBuffer.h"
@@ -582,6 +583,7 @@ OSStatus ProxyAudioDevice::Initialize(AudioServerPlugInDriverRef inDriver, Audio
     workBuffer = new Byte[gDevice_BytesPerFrameInChannel * gDevice_ChannelsPerFrame * kDevice_RingBufferSize * 2];
 
     initializeOutputDevice();
+    setupPowerManagementListener();
 
     return theAnswer;
 }
@@ -4982,6 +4984,110 @@ void ProxyAudioDevice::setupAudioDevicesListener() {
     }
     
     DebugMsg("ProxyAudio: setupAudioDevicesListener finished");
+}
+
+#pragma mark Power Management
+
+void ProxyAudioDevice::powerCallbackStatic(void *refCon,
+                                           io_service_t service,
+                                           natural_t messageType,
+                                           void *messageArgument) {
+#pragma unused(service)
+    if (!refCon) {
+        return;
+    }
+
+    static_cast<ProxyAudioDevice *>(refCon)->powerCallback(messageType, messageArgument);
+}
+
+void ProxyAudioDevice::powerCallback(natural_t messageType, void *messageArgument) {
+    switch (messageType) {
+        case kIOMessageCanSystemSleep:
+            // Allow the system to sleep. If we don't reply, the system blocks
+            // for ~30 seconds before timing out.
+            DebugMsg("ProxyAudio: powerCallback kIOMessageCanSystemSleep");
+            IOAllowPowerChange(powerRootPort, (long)messageArgument);
+            break;
+
+        case kIOMessageSystemWillSleep:
+            // We must acknowledge or the system blocks for ~30 seconds. Tear
+            // down the output device first so any stale IOProc registration
+            // is gone before sleep — this also makes sure we don't end up
+            // holding a half-stopped device after wake.
+            DebugMsg("ProxyAudio: powerCallback kIOMessageSystemWillSleep");
+            deinitializeOutputDevice();
+            IOAllowPowerChange(powerRootPort, (long)messageArgument);
+            break;
+
+        case kIOMessageSystemHasPoweredOn:
+            // After wake, CoreAudio's HAL has re-published the real output
+            // device but our previously registered IOProc is no longer being
+            // driven. Force a full teardown + rebuild — same path as the user
+            // toggling the output device manually.
+            DebugMsg("ProxyAudio: powerCallback kIOMessageSystemHasPoweredOn");
+            handleSystemDidWake();
+            break;
+
+        default:
+            break;
+    }
+}
+
+void ProxyAudioDevice::handleSystemDidWake() {
+    // Run on the audio output queue so we don't race with setupTargetOutputDevice
+    // / matchOutputDeviceSampleRate / updateOutputDeviceStartedState. Both
+    // deinitializeOutputDevice() and setupTargetOutputDevice() take
+    // outputDeviceMutex internally, so we must not be holding it here.
+    ExecuteInAudioOutputThread(^{
+        DebugMsg("ProxyAudio: handleSystemDidWake rebuilding output device after wake");
+        // Invalidating before setupTargetOutputDevice() is important: the
+        // function early-returns when the target device id and buffer size
+        // haven't changed, which is exactly the case after wake. Tearing it
+        // down forces the rebuild path.
+        deinitializeOutputDevice();
+        setupTargetOutputDevice();
+    });
+}
+
+void ProxyAudioDevice::setupPowerManagementListener() {
+    if (powerRootPort != MACH_PORT_NULL) {
+        DebugMsg("ProxyAudio: setupPowerManagementListener already registered");
+        return;
+    }
+
+    DebugMsg("ProxyAudio: setupPowerManagementListener");
+
+    powerRootPort = IORegisterForSystemPower(this, &powerNotifyPort, &ProxyAudioDevice::powerCallbackStatic, &powerNotifier);
+
+    if (powerRootPort == MACH_PORT_NULL || powerNotifyPort == NULL) {
+        syslog(LOG_WARNING, "ProxyAudio: IORegisterForSystemPower failed");
+        powerRootPort = MACH_PORT_NULL;
+        powerNotifyPort = NULL;
+        powerNotifier = MACH_PORT_NULL;
+        return;
+    }
+
+    // Drive the notification port from our serial audio output queue so the
+    // wake handler is naturally serialized with everything else that touches
+    // the output device.
+    IONotificationPortSetDispatchQueue(powerNotifyPort, audioOutputQueue);
+}
+
+void ProxyAudioDevice::teardownPowerManagementListener() {
+    if (powerNotifier != MACH_PORT_NULL) {
+        IODeregisterForSystemPower(&powerNotifier);
+        powerNotifier = MACH_PORT_NULL;
+    }
+
+    if (powerNotifyPort != NULL) {
+        IONotificationPortDestroy(powerNotifyPort);
+        powerNotifyPort = NULL;
+    }
+
+    if (powerRootPort != MACH_PORT_NULL) {
+        IOServiceClose(powerRootPort);
+        powerRootPort = MACH_PORT_NULL;
+    }
 }
 
 #pragma mark IO Operations
