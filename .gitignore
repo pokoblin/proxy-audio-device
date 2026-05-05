@@ -71,3 +71,6 @@ DerivedData/
 # committed. The committed `rebuild-and-install.config.template` shows the
 # expected fields.
 rebuild-and-install.config
+
+# Local release artifacts produced by packaging.
+dist/
