@@ -7,27 +7,24 @@ This is a fork of [briankendall/proxy-audio-device](https://github.com/briankend
 ### Changes in this fork
 
 - **Fix: audio resumes automatically after macOS sleep/wake.** Previously the proxy device went silent after wake until you manually toggled the system output device. The driver now hooks IOKit power notifications (`IORegisterForSystemPower`) and rebuilds its IOProc on wake.
-- **Build script: `rebuild-and-install.sh`.** One command rebuilds the driver with your own signing identity, installs it to `/Library/Audio/Plug-Ins/HAL/`, and restarts coreaudiod (with a SIP-aware fallback for macOS 26+). Signing config lives in a gitignored `rebuild-and-install.config`, so your team ID never enters version control.
+- **Install / uninstall scripts.** `install.sh` and `uninstall.sh` (shipped in the release zip) install or remove the pre-built bundles in one command. `rebuild-and-install.sh` (in the repo) builds from source with your own signing identity — config lives in a gitignored `rebuild-and-install.config`, so your team ID never enters version control. All three restart coreaudiod with a SIP-aware fallback for macOS 26+.
 
 ### Installation
 
-#### One-click install / uninstall scripts (recommended)
+All install paths below restart coreaudiod with a SIP-aware fallback (`launchctl kickstart` → `sudo killall coreaudiod`), so they work on macOS 14.4+ and macOS 26+ alike.
 
-Two scripts at the repo root automate the full lifecycle. Both restart coreaudiod with a SIP-aware fallback (`launchctl kickstart` → `sudo killall coreaudiod`), so they work on macOS 14.4+ and macOS 26+ alike.
+#### Pre-built zip from Releases (recommended)
 
-**Install** — builds the driver from source with your own signing identity, installs it to `/Library/Audio/Plug-Ins/HAL/`, and restarts coreaudiod:
+Grab the latest zip from the [Releases page](https://github.com/pokoblin/proxy-audio-device/releases). It ships pre-built signed bundles plus `install.sh` / `uninstall.sh`. After unzipping:
 
 ```bash
-cp rebuild-and-install.config.template rebuild-and-install.config
-$EDITOR rebuild-and-install.config        # fill in DEVELOPMENT_TEAM and CODE_SIGN_IDENTITY
-./rebuild-and-install.sh
+cd ProxyAudioDevice_v1.0.8
+./install.sh                  # install driver + Settings.app, restart coreaudiod
+# or: ./install.sh --no-app   # driver only
+# or: ./install.sh --dry-run  # preview without changing anything
 ```
 
-List signing identities with `security find-identity -v -p codesigning`. The config file is gitignored. Other flags: `--build` (skip install), `--no-clean` (incremental).
-
-After the driver is installed, drag `Proxy Audio Device Settings.app` (built under `build/Release/`) into `/Applications` and launch it to configure the device.
-
-**Uninstall** — removes the driver and restarts coreaudiod:
+To remove later:
 
 ```bash
 ./uninstall.sh                # remove driver only
@@ -35,18 +32,21 @@ After the driver is installed, drag `Proxy Audio Device Settings.app` (built und
 ./uninstall.sh --dry-run      # preview without changing anything
 ```
 
-#### Pre-built zip (from Releases)
+No build tools or signing identity required.
 
-If you grab the release zip from the [Releases page](https://github.com/pokoblin/proxy-audio-device/releases), it ships with the same `install.sh` / `uninstall.sh` scripts next to the pre-built bundles. After unzipping:
+#### Build from source
+
+If you want to build and install from a local clone — for development, or because you want to sign with your own identity — use `rebuild-and-install.sh` at the repo root:
 
 ```bash
-cd ProxyAudioDevice_v1.0.8
-./install.sh           # install driver + Settings.app, restart coreaudiod
-# or: ./install.sh --no-app   # driver only
-# or: ./install.sh --dry-run  # preview without changing anything
+cp rebuild-and-install.config.template rebuild-and-install.config
+$EDITOR rebuild-and-install.config        # fill in DEVELOPMENT_TEAM and CODE_SIGN_IDENTITY
+./rebuild-and-install.sh
 ```
 
-`./uninstall.sh` (with the same `--app` / `--dry-run` flags) handles removal.
+List available signing identities with `security find-identity -v -p codesigning`. The config file is gitignored, so your team ID never gets committed. Other flags: `--build` (skip install), `--no-clean` (incremental).
+
+After installation, drag `Proxy Audio Device Settings.app` (built under `build/Release/`) into `/Applications` and launch it to configure the device. `./uninstall.sh` (same flags as above) removes things when you're done.
 
 #### Manual installation
 
@@ -87,7 +87,7 @@ cd ProxyAudioDevice_v1.0.8
 
 ### Building
 
-The recommended path is `./rebuild-and-install.sh` documented under [Installation](#one-click-install--uninstall-scripts-recommended). To build manually instead, clone the repo, open the Xcode project, and build the `ProxyAudioDevice` and `Proxy Audio Device Settings` targets — then follow the [manual installation](#manual-installation) instructions to install the products.
+For end users the [pre-built zip](#pre-built-zip-from-releases-recommended) is the simplest path. To build from source, use `./rebuild-and-install.sh` (see [Build from source](#build-from-source)) — or open the Xcode project, build the `ProxyAudioDevice` and `Proxy Audio Device Settings` targets manually, and follow the [manual installation](#manual-installation) steps.
 
 
 ### Issues
