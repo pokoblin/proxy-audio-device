@@ -2,6 +2,11 @@
 
 A HAL virtual audio driver for macOS that sends all output to another audio device. Its main purpose is to make it possible to use macOS's system volume controls, such as the volume menu bar icon or volume keyboard keys, to change the volume of external audio interfaces that don't allow it. It might be useful for something else, too.
 
+### Changes in this fork
+
+- **Fix: audio resumes automatically after macOS sleep/wake.** Previously the proxy device went silent after wake until you manually toggled the system output device. The driver now hooks IOKit power notifications (`IORegisterForSystemPower`) and rebuilds its IOProc on wake.
+- **Build script: `rebuild-and-install.sh`.** One command rebuilds the driver with your own signing identity, installs it to `/Library/Audio/Plug-Ins/HAL/`, and restarts coreaudiod (with a SIP-aware fallback for macOS 26+). Signing config lives in a gitignored `rebuild-and-install.config`, so your team ID never enters version control.
+
 ### Installation
 
 #### Install with a package manager
@@ -57,7 +62,23 @@ Run the _Proxy Audio Device Settings_ app to configure your new audio device.
 
 ### Building
 
-Clone the repo, open the Xcode project and build the driver and the settings application. Then follow the above installation instructions to install it.
+#### Quick build & install (recommended)
+
+```bash
+cp rebuild-and-install.config.template rebuild-and-install.config
+$EDITOR rebuild-and-install.config        # fill in DEVELOPMENT_TEAM and CODE_SIGN_IDENTITY
+./rebuild-and-install.sh                  # build + install + restart coreaudiod
+```
+
+List available signing identities with `security find-identity -v -p codesigning`. The config file is gitignored.
+
+Other flags: `--build` (skip install), `--no-clean` (incremental build).
+
+If both `launchctl kickstart` and `killall coreaudiod` are blocked (very rare), the script prints a highlighted prompt asking you to run `sudo killall coreaudiod` manually, or log out / reboot.
+
+#### Manual build
+
+Clone the repo, open the Xcode project and build the driver and the settings application. Then follow the installation instructions above.
 
 
 ### Issues
