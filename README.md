@@ -2,6 +2,8 @@
 
 A HAL virtual audio driver for macOS that sends all output to another audio device. Its main purpose is to make it possible to use macOS's system volume controls, such as the volume menu bar icon or volume keyboard keys, to change the volume of external audio interfaces that don't allow it. It might be useful for something else, too.
 
+This is a fork of [briankendall/proxy-audio-device](https://github.com/briankendall/proxy-audio-device); credit for the original driver and Settings app belongs to Brian Kendall. See "Changes in this fork" below for the deltas this branch carries over upstream.
+
 ### Changes in this fork
 
 - **Fix: audio resumes automatically after macOS sleep/wake.** Previously the proxy device went silent after wake until you manually toggled the system output device. The driver now hooks IOKit power notifications (`IORegisterForSystemPower`) and rebuilds its IOProc on wake.
@@ -9,19 +11,42 @@ A HAL virtual audio driver for macOS that sends all output to another audio devi
 
 ### Installation
 
-#### Install with a package manager
+#### One-click install / uninstall scripts (recommended)
 
-[![Packaging status on repology](https://repology.org/badge/vertical-allrepos/proxy-audio-device.svg)](https://repology.org/project/proxy-audio-device/versions)
+Two scripts at the repo root automate the full lifecycle. Both restart coreaudiod with a SIP-aware fallback (`launchctl kickstart` → `sudo killall coreaudiod`), so they work on macOS 14.4+ and macOS 26+ alike.
 
-Install [proxy-audio-device with Homebrew with `brew`](https://formulae.brew.sh/cask/proxy-audio-device):
+**Install** — builds the driver from source with your own signing identity, installs it to `/Library/Audio/Plug-Ins/HAL/`, and restarts coreaudiod:
 
-    brew install --cask proxy-audio-device
+```bash
+cp rebuild-and-install.config.template rebuild-and-install.config
+$EDITOR rebuild-and-install.config        # fill in DEVELOPMENT_TEAM and CODE_SIGN_IDENTITY
+./rebuild-and-install.sh
+```
 
-_or_ [proxy-audio-device on macports with `port`](https://ports.macports.org/port/proxy-audio-device/):
+List signing identities with `security find-identity -v -p codesigning`. The config file is gitignored. Other flags: `--build` (skip install), `--no-clean` (incremental).
 
-    sudo port install proxy-audio-device
+After the driver is installed, drag `Proxy Audio Device Settings.app` (built under `build/Release/`) into `/Applications` and launch it to configure the device.
 
-Run the _Proxy Audio Device Settings_ app to configure your new audio device.
+**Uninstall** — removes the driver and restarts coreaudiod:
+
+```bash
+./uninstall.sh                # remove driver only
+./uninstall.sh --app          # also remove Settings.app from /Applications
+./uninstall.sh --dry-run      # preview without changing anything
+```
+
+#### Pre-built zip (from Releases)
+
+If you grab the release zip from the [Releases page](https://github.com/pokoblin/proxy-audio-device/releases), it ships with the same `install.sh` / `uninstall.sh` scripts next to the pre-built bundles. After unzipping:
+
+```bash
+cd ProxyAudioDevice_v1.0.8
+./install.sh           # install driver + Settings.app, restart coreaudiod
+# or: ./install.sh --no-app   # driver only
+# or: ./install.sh --dry-run  # preview without changing anything
+```
+
+`./uninstall.sh` (with the same `--app` / `--dry-run` flags) handles removal.
 
 #### Manual installation
 
@@ -46,7 +71,7 @@ Run the _Proxy Audio Device Settings_ app to configure your new audio device.
 
 6. Run Proxy Audio Device Settings to configure the proxy output device's name, which output device the driver will proxy to, and how large you want its audio buffer to be.
 
-### Uninstallation
+#### Manual uninstallation
 
 1. Open a terminal window and execute the following command:
 
@@ -62,23 +87,7 @@ Run the _Proxy Audio Device Settings_ app to configure your new audio device.
 
 ### Building
 
-#### Quick build & install (recommended)
-
-```bash
-cp rebuild-and-install.config.template rebuild-and-install.config
-$EDITOR rebuild-and-install.config        # fill in DEVELOPMENT_TEAM and CODE_SIGN_IDENTITY
-./rebuild-and-install.sh                  # build + install + restart coreaudiod
-```
-
-List available signing identities with `security find-identity -v -p codesigning`. The config file is gitignored.
-
-Other flags: `--build` (skip install), `--no-clean` (incremental build).
-
-If both `launchctl kickstart` and `killall coreaudiod` are blocked (very rare), the script prints a highlighted prompt asking you to run `sudo killall coreaudiod` manually, or log out / reboot.
-
-#### Manual build
-
-Clone the repo, open the Xcode project and build the driver and the settings application. Then follow the installation instructions above.
+The recommended path is `./rebuild-and-install.sh` documented under [Installation](#one-click-install--uninstall-scripts-recommended). To build manually instead, clone the repo, open the Xcode project, and build the `ProxyAudioDevice` and `Proxy Audio Device Settings` targets — then follow the [manual installation](#manual-installation) instructions to install the products.
 
 
 ### Issues
